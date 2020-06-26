@@ -1,8 +1,3 @@
-%%%-------------------------------------------------------------------
-%% @doc emysql_orm top level supervisor.
-%% @end
-%%%-------------------------------------------------------------------
-
 -module(emysql_orm_sup).
 
 -behaviour(supervisor).
@@ -14,7 +9,7 @@
 -define(SERVER, ?MODULE).
 
 start_link() ->
-    supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+  supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
 %% sup_flags() = #{strategy => strategy(),         % optional
 %%                 intensity => non_neg_integer(), % optional
@@ -26,10 +21,8 @@ start_link() ->
 %%                  type => worker(),       % optional
 %%                  modules => modules()}   % optional
 init([]) ->
-    SupFlags = #{strategy => one_for_all,
-                 intensity => 0,
-                 period => 1},
-    ChildSpecs = [],
-    {ok, {SupFlags, ChildSpecs}}.
-
-%% internal functions
+  SupFlags = #{strategy => one_for_one,
+    intensity => 100,
+    period => 5000},
+  Children = [{emysql_orm, {emysql_orm, start_link, []}, permanent, 5000, worker, [emysql_orm]}],
+  {ok, {SupFlags, Children}}.

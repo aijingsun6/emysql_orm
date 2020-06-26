@@ -9,5 +9,16 @@
        }}
      ]}
    ]},
-  {emysql_orm,[]}
+  {emysql_orm,[
+        {pools, [{default , #{host => "${MYSQL_HOST}",
+                               port => ${MYSQL_PORT},
+                               user => "${MYSQL_USER}",
+                               password => "${MYSQL_PASSWORD}",
+                               size => ${MYSQL_SIZE},
+                               database => "${MYSQL_DATABASE}",
+                               encoding => ${MYSQL_ENCODING},
+                               connect_timeout => ${MYSQL_CONNECT_TIMEOUT}}}]
+
+        }
+  ]}
 ].
