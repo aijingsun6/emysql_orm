@@ -1,0 +1,7 @@
+-sname emysql_orm
+
+-setcookie ${COOKIE}
+
++K true
+
++A30

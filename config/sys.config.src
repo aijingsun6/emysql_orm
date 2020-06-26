@@ -1,0 +1,13 @@
+[
+  {kernel, [
+     {logger_level, info},
+     {error_logger, tty},
+     {logger, [
+       {handler, default, logger_std_h, #{
+         formatter => {logger_formatter, #{single_line => true, template=> [time, " ", level, ": ", msg, "\n"]}},
+         config => #{file => "logs/info.log"}
+       }}
+     ]}
+   ]},
+  {emysql_orm,[]}
+].

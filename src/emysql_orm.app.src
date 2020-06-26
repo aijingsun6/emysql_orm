@@ -1,0 +1,14 @@
+{application, emysql_orm,
+ [{description, "emysql ORM"},
+  {vsn, "0.0.1"},
+  {registered, []},
+  {mod, {emysql_orm_app, []}},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  {env,[]},
+  {modules, []},
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
