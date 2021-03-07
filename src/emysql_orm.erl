@@ -7,8 +7,7 @@
 -export([
   start_link/0,
   i/0,
-  add_cfg/6,
-  get_default_database/0
+  add_cfg/6
 ]).
 
 -export([
@@ -174,13 +173,6 @@ add_cfg(Key, DBName, TableName, ShareFunc, Record, GenIDX) ->
       end;
     Err ->
       Err
-  end.
-
-get_default_database()->
-  {ok,Pools} = application:get_env(?MODULE,pools),
-  case proplists:get_value(default,Pools,undefined) of
-    #{database:= DB} -> {ok,DB};
-    _ -> {error,not_found}
   end.
 
 handle_call(_Request, _From, State) ->
