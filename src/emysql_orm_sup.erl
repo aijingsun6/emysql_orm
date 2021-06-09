@@ -21,8 +21,6 @@ start_link() ->
 %%                  type => worker(),       % optional
 %%                  modules => modules()}   % optional
 init([]) ->
-  SupFlags = #{strategy => one_for_one,
-    intensity => 100,
-    period => 5000},
+  SupFlags = #{strategy => one_for_one, intensity => 100, period => 5000},
   Children = [{emysql_orm, {emysql_orm, start_link, []}, permanent, 5000, worker, [emysql_orm]}],
   {ok, {SupFlags, Children}}.

@@ -3,12 +3,10 @@
   {vsn, "0.0.1"},
   {registered, []},
   {mod, {emysql_orm_app, []}},
-  {applications,
-   [kernel,
-    stdlib
-   ]},
+  {applications, [kernel,stdlib,sasl,crypto,emysql]},
   {env,[]},
   {modules, []},
   {licenses, ["Apache 2.0"]},
-  {links, []}
+  {links, [{"GitHub", "https://github.com/aijingsun6/emysql_orm"}]},
+  {files,["src","config"]}
  ]}.

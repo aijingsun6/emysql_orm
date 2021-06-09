@@ -17,6 +17,12 @@
 ]).
 
 -export([
+  find_fields/3,
+  find_fields/4,
+  find_fields/6
+]).
+
+-export([
   count/3,
   insert/3,
   replace/3,
@@ -75,10 +81,10 @@
 
 -define(ORDER_TYPE_ASC, asc).
 -define(ORDER_TYPE_DESC, desc).
--define(DEF_TIMEOUT, 1000 * 10).
+-define(DEF_TIMEOUT, 5000).
 -record(state, {}).
 
--record(record_cfg, {
+-record(orm_cfg, {
   key :: atom(),
   db_name :: binary(),
   table_name :: binary(),
@@ -92,7 +98,7 @@ start_link() ->
 
 i() ->
   F =
-    fun(#record_cfg{key = K, db_name = DB, table_name = Table, share_func = Share, record = Rec, gen_idx = GID}, Acc) ->
+    fun(#orm_cfg{key = K, db_name = DB, table_name = Table, share_func = Share, record = Rec, gen_idx = GID}, Acc) ->
       io:format("key:~p~n", [K]),
       io:format("\tdb:~ts~n", [DB]),
       io:format("\ttable:~ts~n", [Table]),
@@ -115,7 +121,7 @@ i() ->
   io:format("~n", []).
 
 init([]) ->
-  ets:new(?EMYSQL_ORM_CFG_ETS, [public, named_table, set, {keypos, #record_cfg.key}, {read_concurrency, true}]),
+  ets:new(?EMYSQL_ORM_CFG_ETS, [named_table, set, {keypos, #orm_cfg.key}, {read_concurrency, true}]),
   add_pool(),
   {ok, #state{}}.
 
@@ -130,6 +136,7 @@ check_record(Rec) ->
   [_Name | L] = erlang:tuple_to_list(Rec),
   F =
     fun({Name, Type}) when is_binary(Name), is_atom(Type) -> lists:member(Type, ?COL_TYPE_ALL);
+      ({Name, ?COL_TYPE_TERM, Enc, Dec}) when is_binary(Name), is_function(Enc, 1), is_function(Dec, 1) -> true;
       (_) -> false
     end,
   lists:all(F, L).
@@ -150,7 +157,7 @@ parse_record_cfg(Key, DBName, TableName, ShareFunc, Record) ->
     not CheckRec -> {fail, record_cfg_error};
     not CheckShareFunc -> {fail, share_func_error};
     true ->
-      {ok, #record_cfg{key = Key, db_name = DBName, table_name = TableName, share_func = ShareFunc, record = Record}}
+      {ok, #orm_cfg{key = Key, db_name = DBName, table_name = TableName, share_func = ShareFunc, record = Record}}
   end.
 
 check_auto_gen(Gen, _Size) when Gen == undefined -> {ok, success};
@@ -166,8 +173,8 @@ add_cfg(Key, DBName, TableName, ShareFunc, Record, GenIDX) ->
       Size = erlang:size(Record),
       case check_auto_gen(GenIDX, Size) of
         {ok, _} ->
-          CFG2 = CFG#record_cfg{gen_idx = GenIDX},
-          ets:insert(?EMYSQL_ORM_CFG_ETS, CFG2);
+          CFG2 = CFG#orm_cfg{gen_idx = GenIDX},
+          gen_server:call(?SERVER,{insert_cfg,CFG2},?DEF_TIMEOUT);
         Err ->
           Err
       end;
@@ -175,6 +182,9 @@ add_cfg(Key, DBName, TableName, ShareFunc, Record, GenIDX) ->
       Err
   end.
 
+handle_call({insert_cfg, CFG}, _From, State) when is_record(CFG, orm_cfg) ->
+  ets:insert(?EMYSQL_ORM_CFG_ETS, CFG),
+  {reply, ok, State};
 handle_call(_Request, _From, State) ->
   {reply, ok, State}.
 
@@ -218,7 +228,7 @@ find(Key, Share, Cond) -> find(Key, Share, Cond, [], []).
 
 find(Key, Share, Cond, Order, Limit) ->
   [CFG] = ets:lookup(?EMYSQL_ORM_CFG_ETS, Key),
-  #record_cfg{record = Rec} = CFG,
+  #orm_cfg{record = Rec} = CFG,
   Rec2List = erlang:tuple_to_list(Rec),
   [RecName | Fields] = Rec2List,
   {Pool, DB, Table} = find_pool_db_table(CFG, Share),
@@ -227,10 +237,9 @@ find(Key, Share, Cond, Order, Limit) ->
             false -> gen_cond(Cond, Rec2List, [])
           end,
   Order2 = gen_order(Order, Rec2List, []),
-  find_i(Pool, DB, Table, RecName, Fields, Cond2, Order2, Limit).
+  find_i(Pool, DB, Table, RecName, Fields, Fields, Cond2, Order2, Limit).
 
-find_i(Pool, DB, Table, RecName, Fields, Cond, Order, Limit) ->
-
+find_i(Pool, DB, Table, RecName, Fields, FieldsAll, Cond, Order, Limit) ->
   WhereSQL = case Cond == [] of
                true -> <<"">>;
                false -> erlang:iolist_to_binary([<<" WHERE ">>, make_cond_sql(Cond, <<" AND ">>, [])])
@@ -244,19 +253,39 @@ find_i(Pool, DB, Table, RecName, Fields, Cond, Order, Limit) ->
   SQL = erlang:iolist_to_binary([<<"SELECT ">>, make_cols_sql(Fields), <<" FROM ">>, make_db_table_sql(DB, Table), WhereSQL, OrderSQL, make_limit_sql(Limit)]),
   ?LOG_DEBUG("sql ~ts ~n", [SQL]),
   R = emysql:execute(Pool, SQL, ?DEF_TIMEOUT),
-  % ?DEBUG("mysql server resp ~p ~n", [R]),
   case R of
     #result_packet{rows = L} when L == [] ->
       {ok, []};
     #result_packet{rows = L} ->
-      {ok, parse_records(RecName, Fields, L, [])};
+      {ok, parse_records(L, RecName, Fields, FieldsAll, [])};
     #error_packet{msg = MSG} ->
       {fail, MSG}
   end.
 
+find_fields(Key, Share, FS) ->
+  find_fields(Key, Share, FS, [], [], []).
+
+find_fields(Key, Share, FS, Cond) ->
+  find_fields(Key, Share, FS, Cond, [], []).
+
+find_fields(Key, Share, FS, Cond, Order, Limit) ->
+  [CFG] = ets:lookup(?EMYSQL_ORM_CFG_ETS, Key),
+  #orm_cfg{record = Rec} = CFG,
+  Rec2List = erlang:tuple_to_list(Rec),
+  [RecName | FieldsAll] = Rec2List,
+  FS_Sort = lists:sort(sets:to_list(sets:from_list(FS))),
+  FS2 = lists:map(fun(X) -> lists:nth(X, Rec2List) end, FS_Sort),
+  {Pool, DB, Table} = find_pool_db_table(CFG, Share),
+  Cond2 = case erlang:is_tuple(Cond) of
+            true -> gen_cond_by_example(erlang:tuple_to_list(Cond), Rec2List);
+            false -> gen_cond(Cond, Rec2List, [])
+          end,
+  Order2 = gen_order(Order, Rec2List, []),
+  find_i(Pool, DB, Table, RecName, FS2, FieldsAll, Cond2, Order2, Limit).
+
 count(Key, Share, Cond) ->
   [CFG] = ets:lookup(?EMYSQL_ORM_CFG_ETS, Key),
-  #record_cfg{record = Record} = CFG,
+  #orm_cfg{record = Record} = CFG,
   Record2List = erlang:tuple_to_list(Record),
   {Pool, DB, Table} = find_pool_db_table(CFG, Share),
   Cond2 = case erlang:is_tuple(Cond) of
@@ -285,7 +314,7 @@ calc_share(ShareFunc, Share) ->
     undefined -> default
   end.
 
-find_pool_db_table(#record_cfg{db_name = DBName, table_name = TableName, share_func = ShareFunc}, Share) ->
+find_pool_db_table(#orm_cfg{db_name = DBName, table_name = TableName, share_func = ShareFunc}, Share) ->
   case calc_share(ShareFunc, Share) of
     P when is_atom(P) -> {P, DBName, TableName};
     {P, DB0} -> {P, DB0, TableName};
@@ -293,7 +322,9 @@ find_pool_db_table(#record_cfg{db_name = DBName, table_name = TableName, share_f
   end.
 
 make_cols_sql(L) ->
-  L2 = lists:map(fun({Name, _}) -> Name end, L),
+  F = fun({Name, _}) -> Name;
+    ({Name, _, _, _}) -> Name end,
+  L2 = lists:map(F, L),
   erlang:iolist_to_binary(lists:join(<<",">>, L2)).
 
 make_cond_sql([], Join, Acc) ->
@@ -373,37 +404,47 @@ make_db_table_sql(DB, Table) ->
     false -> Table
   end.
 
-parse_fs([], [], Acc) -> lists:reverse(Acc);
-parse_fs([V | L], [{_Name, Type} | R], Acc) when Type == ?COL_TYPE_BOOL ->
+parse_fs([], [], [], Acc) ->
+  lists:reverse(Acc);
+parse_fs([E | Rest], [V | L], [{_Name, Type} = E | R], Acc) when Type == ?COL_TYPE_BOOL ->
   V2 = is_integer(V) andalso V =/= 0,
-  parse_fs(L, R, [V2 | Acc]);
-parse_fs([V | L], [{_Name, Type} | R], Acc) when Type == ?COL_TYPE_DATETIME ->
+  parse_fs(Rest, L, R, [V2 | Acc]);
+parse_fs([E | Rest], [V | L], [{_Name, Type} = E | R], Acc) when Type == ?COL_TYPE_DATETIME ->
   DateTime = case V of
                {datetime, V2} -> V2;
                _ -> undefined
              end,
-  parse_fs(L, R, [DateTime | Acc]);
-parse_fs([V | L], [{_Name, Type} | R], Acc) when Type == ?COL_TYPE_DATE ->
+  parse_fs(Rest, L, R, [DateTime | Acc]);
+parse_fs([E | Rest], [V | L], [{_Name, Type} = E | R], Acc) when Type == ?COL_TYPE_DATE ->
   Date = case V of
            {date, V2} -> V2;
            _ -> undefined
          end,
-  parse_fs(L, R, [Date | Acc]);
-parse_fs([V | L], [{_Name, Type} | R], Acc) when Type == ?COL_TYPE_TERM ->
+  parse_fs(Rest, L, R, [Date | Acc]);
+parse_fs([E | Rest], [V | L], [{_Name, Type} = E | R], Acc) when Type == ?COL_TYPE_TERM ->
   V2 = case erlang:is_binary(V) of
          true -> erlang:binary_to_term(V);
          false -> undefined
        end,
-  parse_fs(L, R, [V2 | Acc]);
-parse_fs([V | L], [_ | R], Acc) ->
-  parse_fs(L, R, [V | Acc]).
+  parse_fs(Rest, L, R, [V2 | Acc]);
+parse_fs([E | Rest], [V | L], [{_Name, Type, _Enc, Dec} = E | R], Acc) when Type == ?COL_TYPE_TERM ->
+  V2 = case erlang:is_binary(V) of
+         true -> Dec(V);
+         false -> undefined
+       end,
+  parse_fs(Rest, L, R, [V2 | Acc]);
+parse_fs([E | Rest], [V | L], [E | R], Acc) ->
+  parse_fs(Rest, L, R, [V | Acc]);
+parse_fs([_ | Rest], L, FS, Acc) ->
+  parse_fs(Rest, L, FS, [undefined | Acc]).
 
-parse_records(_RecName, _FS, [], Acc) -> lists:reverse(Acc);
-parse_records(RecName, FS, [L | Rest], Acc) ->
-  L1 = parse_fs(L, FS, []),
+parse_records([], _RecName, _FS, _FSAll, Acc) ->
+  lists:reverse(Acc);
+parse_records([L | Rest], RecName, FS, FSAll, Acc) ->
+  L1 = parse_fs(FSAll, L, FS, []),
   L2 = [RecName | L1],
   Rec = erlang:list_to_tuple(L2),
-  parse_records(RecName, FS, Rest, [Rec | Acc]).
+  parse_records(Rest, RecName, FS, FSAll, [Rec | Acc]).
 
 make_fields_sql([], [], Acc1, Acc2) ->
   F = fun(L) ->
@@ -413,10 +454,12 @@ make_fields_sql([], [], Acc1, Acc2) ->
       end,
   {F(Acc1), F(Acc2)};
 make_fields_sql([undefined | L1], [_ | L2], Acc1, Acc2) ->
-  % undefined field
   make_fields_sql(L1, L2, Acc1, Acc2);
 make_fields_sql([V | L1], [{ColName, ColType} | L2], Acc1, Acc2) ->
-  make_fields_sql(L1, L2, [ColName | Acc1], [field_v_2_bin(ColType, V) | Acc2]).
+  make_fields_sql(L1, L2, [ColName | Acc1], [field_v_2_bin(ColType, V) | Acc2]);
+make_fields_sql([V | L1], [{ColName, ColType, Enc, _Dec} | L2], Acc1, Acc2) when ColType =:= ?COL_TYPE_TERM ->
+  Bin = Enc(V),
+  make_fields_sql(L1, L2, [ColName | Acc1], [field_v_2_bin(?COL_TYPE_BINARY, Bin) | Acc2]).
 
 insert(Key, Share, Rec) -> insert_replace(insert, Key, Share, Rec).
 
@@ -424,7 +467,7 @@ replace(Key, Share, Rec) -> insert_replace(replace, Key, Share, Rec).
 
 insert_replace(Type, Key, Share, Rec) ->
   [CFG] = ets:lookup(?EMYSQL_ORM_CFG_ETS, Key),
-  #record_cfg{record = Record, gen_idx = GenIDX} = CFG,
+  #orm_cfg{record = Record, gen_idx = GenIDX} = CFG,
   Record2List = erlang:tuple_to_list(Record),
   [RecName | Fields] = Record2List,
   {Pool, DB, Table} = find_pool_db_table(CFG, Share),
@@ -439,7 +482,6 @@ insert_replace(Type, Key, Share, Rec) ->
         end,
   ?LOG_DEBUG("sql ~s ~n", [SQL]),
   R = emysql:execute(Pool, SQL, ?DEF_TIMEOUT),
-  %?DEBUG("mysql server resp ~p ~n", [R]),
   case R of
     #ok_packet{insert_id = GenID} when is_integer(GenIDX) ->
       L3 = lists:zip(lists:seq(1, erlang:size(Rec)), L),
@@ -460,7 +502,7 @@ update(Key, Share, Update, Cond) ->
 
 update(Key, Share, Update, Cond, Order, Limit) ->
   [CFG] = ets:lookup(?EMYSQL_ORM_CFG_ETS, Key),
-  #record_cfg{record = Record} = CFG,
+  #orm_cfg{record = Record} = CFG,
   Record2List = erlang:tuple_to_list(Record),
   {Pool, DB, Table} = find_pool_db_table(CFG, Share),
   Cond2 = case erlang:is_tuple(Cond) of
@@ -503,7 +545,7 @@ delete(Key, Share, Cond) -> delete(Key, Share, Cond, [], []).
 
 delete(Key, Share, Cond, Order, Limit) ->
   [CFG] = ets:lookup(?EMYSQL_ORM_CFG_ETS, Key),
-  #record_cfg{record = Record} = CFG,
+  #orm_cfg{record = Record} = CFG,
   Record2List = erlang:tuple_to_list(Record),
   {Pool, DB, Table} = find_pool_db_table(CFG, Share),
   Cond2 = case erlang:is_tuple(Cond) of
